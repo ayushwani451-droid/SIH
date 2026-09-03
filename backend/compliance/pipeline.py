@@ -59,11 +59,15 @@ def run_full_compliance_pipeline(
         ocr_result.full_text, profile=profile, ruleset=ruleset, classified_fields=classified,
     )
 
-    # Enrich each field with its classification confidence (Phase 2 metadata) before
-    # handing off to build_compliance_report - rule_engine's own FieldResult type stays
-    # untouched; this merge is pipeline.py's job as the integration layer.
+    # Enrich each field with its classification confidence and matched detections (Phase
+    # 2 metadata - bbox included, for a frontend to draw/color-code boxes) before handing
+    # off to build_compliance_report - rule_engine's own FieldResult type stays untouched;
+    # this merge is pipeline.py's job as the integration layer.
     for field_dict in report_dict["fields"]:
         classified_field = classified.get(field_dict["field"])
         field_dict["confidence"] = classified_field.confidence if classified_field else None
+        field_dict["matched_detections"] = (
+            [d.model_dump() for d in classified_field.matched_detections] if classified_field else []
+        )
 
     return build_compliance_report(report_dict, product=product)

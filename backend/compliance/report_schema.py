@@ -50,6 +50,18 @@ class ProductIdentification(BaseModel):
     manufacturer: Optional[str] = None
 
 
+class MatchedDetection(BaseModel):
+    """
+    One OCR detection field_classifier.py attributed to a field - just enough for a
+    frontend to draw/color a bounding box, not the full Detection shape from
+    backend/ocr/schemas.py (this module stays independent of that schema).
+    """
+
+    text: str
+    bbox: List[int] = Field(default_factory=list, description="[x1, y1, x2, y2] in the original image's pixel coordinates")
+    confidence: float = 1.0
+
+
 class FieldVerdict(BaseModel):
     """One row of the field-wise verdict table - one per Rule 6 mandatory declaration."""
 
@@ -73,6 +85,12 @@ class FieldVerdict(BaseModel):
         None,
         description="How confidently field_classifier.py located this field in the OCR text "
                      "(Phase 2). None if classification wasn't used, or nothing was found at all.",
+    )
+    matched_detections: List[MatchedDetection] = Field(
+        default_factory=list,
+        description="Which raw OCR detection(s) (text + bbox) this verdict was based on, for a "
+                     "frontend to draw/color-code bounding boxes against. Empty if classification "
+                     "wasn't used or nothing was found for this field.",
     )
 
 
@@ -164,6 +182,10 @@ def build_compliance_report(
             conditional_field=raw.get("conditional_field", False),
             reason=raw.get("reason"),
             confidence=raw.get("confidence"),
+            matched_detections=[
+                MatchedDetection(text=d.get("text", ""), bbox=d.get("bbox", []), confidence=d.get("confidence", 1.0))
+                for d in raw.get("matched_detections", [])
+            ],
         ))
 
     violations: List[Violation] = [

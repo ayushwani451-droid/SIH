@@ -72,6 +72,28 @@ class VerdictDerivationTests(unittest.TestCase):
         self.assertEqual(report.fields[0].field_label, "Some New Field")
 
 
+class MatchedDetectionsTests(unittest.TestCase):
+    def test_matched_detections_with_bbox_are_carried_through(self):
+        result = _pipeline_result([{
+            "field": "net_quantity", "status": "present", "extracted_value": "200 g",
+            "compliant": True, "reason": None, "conditional_field": False,
+            "matched_detections": [{"text": "Net Qty 200 g", "bbox": [10, 32, 200, 52], "confidence": 0.95}],
+        }])
+        report = build_compliance_report(result)
+        detections = report.fields[0].matched_detections
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0].bbox, [10, 32, 200, 52])
+        self.assertEqual(detections[0].text, "Net Qty 200 g")
+
+    def test_missing_matched_detections_defaults_to_empty_list(self):
+        result = _pipeline_result([{
+            "field": "net_quantity", "status": "absent", "extracted_value": None,
+            "compliant": False, "reason": "not found", "conditional_field": False,
+        }])
+        report = build_compliance_report(result)
+        self.assertEqual(report.fields[0].matched_detections, [])
+
+
 class OverallConfidenceTests(unittest.TestCase):
     def test_none_when_no_field_has_confidence(self):
         result = _pipeline_result([{
