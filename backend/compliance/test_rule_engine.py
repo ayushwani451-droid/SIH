@@ -160,6 +160,18 @@ class FieldValidatorTests(unittest.TestCase):
         result = check_exemptions()
         self.assertFalse(result["exempt"])
         self.assertEqual(result["applicable_exemptions"], [])
+        self.assertEqual(result["context_considered"], {})
+
+    def test_exemptions_echoes_back_provided_weight_and_category(self):
+        result = check_exemptions(weight_kg=0.05, category="confectionery")
+        self.assertFalse(result["exempt"])  # no threshold data in the ruleset to evaluate against yet
+        self.assertEqual(result["context_considered"], {"weight_kg": 0.05, "category": "confectionery"})
+        self.assertIn("does not yet define any exemption rules", result["reason"])
+
+    def test_exemptions_product_context_dict_is_merged_in(self):
+        result = check_exemptions(product_context={"category": "agricultural produce", "packaging": "loose"})
+        self.assertEqual(result["context_considered"]["category"], "agricultural produce")
+        self.assertEqual(result["context_considered"]["packaging"], "loose")
 
 
 class RulesetLoadingTests(unittest.TestCase):

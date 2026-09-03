@@ -137,6 +137,79 @@ class FieldResult(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Classification input (Phase 2 - produced by field_classifier.py)
+#
+# Defined here, not in field_classifier.py, so the dependency stays
+# one-directional: field_classifier imports FROM rule_engine (for these
+# types and the shared regexes below), rule_engine never imports
+# field_classifier. Every validator below accepts an optional `classified`
+# of this shape; when it's None (the default), behavior is byte-for-byte
+# what it was in Phase 1 - full-text regex scanning on `text`.
+# --------------------------------------------------------------------------
+
+class ClassifiedDetection(BaseModel):
+    """One OCR detection, trimmed to what classification/validation needs."""
+
+    text: str
+    confidence: float = 1.0
+    bbox: List[int] = Field(default_factory=list)
+
+
+class ClassifiedField(BaseModel):
+    """The field_classifier's best guess at which detection(s) hold one Rule 6 field."""
+
+    field: str
+    matched_detections: List[ClassifiedDetection] = Field(default_factory=list)
+    combined_text: str = ""
+    confidence: Optional[Literal["high", "medium", "low"]] = None
+    anchor_keyword: Optional[str] = None
+    ambiguous: bool = Field(
+        False,
+        description="True when field_classifier.py found two or more detections with genuinely "
+                     "different values for this field (e.g. two different MRPs on a multi-face "
+                     "label) - see candidate_values. Validators check this first and refuse to "
+                     "silently pick one.",
+    )
+    candidate_values: List[str] = Field(default_factory=list)
+
+
+class ClassifiedFields(BaseModel):
+    """Output of field_classifier.classify_fields(): one ClassifiedField per Rule 6 field."""
+
+    fields: Dict[str, ClassifiedField] = Field(default_factory=dict)
+    full_text: str = ""
+
+    def get(self, field_name: str) -> Optional[ClassifiedField]:
+        return self.fields.get(field_name)
+
+
+def _scan_text(text: str, classified: Optional[ClassifiedField]) -> str:
+    """Prefer the classifier's narrowed text when it actually found something; else fall back."""
+    if classified and classified.combined_text.strip():
+        return classified.combined_text
+    return text
+
+
+def _ambiguous_result(field: str, classified: Optional[ClassifiedField]) -> Optional[FieldResult]:
+    """
+    Phase 6: if field_classifier.py flagged this field as ambiguous (two or more detections
+    with genuinely different values - a multi-face label with conflicting MRPs, say), stop
+    here rather than letting the normal presence/format logic silently narrow to one of
+    them. Called first thing in every validator that can receive conflicting values.
+    """
+    if not (classified and classified.ambiguous):
+        return None
+    candidates = ", ".join(repr(v) for v in classified.candidate_values) or "multiple conflicting values"
+    return FieldResult(
+        field=field, status="ambiguous", extracted_value=" / ".join(classified.candidate_values),
+        compliant="needs_review",
+        reason=f"Multiple conflicting values were detected for this field ({candidates}); flagged "
+               "for manual review rather than silently picking one - e.g. a multi-face label with "
+               "different values printed on different panels.",
+    )
+
+
+# --------------------------------------------------------------------------
 # Shared regexes / lookup tables
 # --------------------------------------------------------------------------
 
@@ -194,7 +267,8 @@ UNIT_BASE: Dict[str, Tuple[str, float]] = {
 }
 
 
-def _to_base(value: float, unit: str) -> Optional[Tuple[str, float]]:
+def to_base_amount(value: float, unit: str) -> Optional[Tuple[str, float]]:
+    """Public so field_classifier.py can reuse the same unit normalization for conflict detection."""
     info = UNIT_BASE.get(unit.lower().rstrip("."))
     if not info:
         return None
@@ -206,8 +280,11 @@ def _to_base(value: float, unit: str) -> Optional[Tuple[str, float]]:
 # Field validators - one per Rule 6 mandatory declaration
 # --------------------------------------------------------------------------
 
-def check_manufacturer_packer_importer_details(text: str) -> FieldResult:
+def check_manufacturer_packer_importer_details(
+    text: str, classified: Optional[ClassifiedField] = None
+) -> FieldResult:
     field = "manufacturer_packer_importer_details"
+    text = _scan_text(text, classified)
     if not text or not text.strip():
         return FieldResult(
             field=field, status="absent", compliant=False,
@@ -224,8 +301,9 @@ def check_manufacturer_packer_importer_details(text: str) -> FieldResult:
     return FieldResult(field=field, status="present", extracted_value=snippet, compliant=True)
 
 
-def check_common_generic_name(text: str) -> FieldResult:
+def check_common_generic_name(text: str, classified: Optional[ClassifiedField] = None) -> FieldResult:
     field = "common_generic_name_of_commodity"
+    text = _scan_text(text, classified)
     if not text or not text.strip():
         return FieldResult(
             field=field, status="absent", compliant=False,
@@ -240,8 +318,12 @@ def check_common_generic_name(text: str) -> FieldResult:
     )
 
 
-def check_net_quantity(text: str) -> FieldResult:
+def check_net_quantity(text: str, classified: Optional[ClassifiedField] = None) -> FieldResult:
     field = "net_quantity"
+    ambiguous = _ambiguous_result(field, classified)
+    if ambiguous:
+        return ambiguous
+    text = _scan_text(text, classified)
     if not text or not text.strip():
         return FieldResult(
             field=field, status="absent", compliant=False,
@@ -269,8 +351,12 @@ def _parse_manufacture_date(text: str) -> Optional[Tuple[int, int, str]]:
     return None
 
 
-def check_manufacture_date(text: str) -> FieldResult:
+def check_manufacture_date(text: str, classified: Optional[ClassifiedField] = None) -> FieldResult:
     field = "month_and_year_of_manufacture_or_packing"
+    ambiguous = _ambiguous_result(field, classified)
+    if ambiguous:
+        return ambiguous
+    text = _scan_text(text, classified)
     if not text or not text.strip():
         return FieldResult(
             field=field, status="absent", compliant=False,
@@ -299,7 +385,8 @@ def _compile_mrp_pattern(regex_str: str) -> re.Pattern:
     return re.compile(regex_str, re.IGNORECASE | re.MULTILINE)
 
 
-def _mrp_pattern(ruleset: Ruleset) -> re.Pattern:
+def mrp_pattern(ruleset: Ruleset) -> re.Pattern:
+    """Public so field_classifier.py can reuse the exact same MRP-value regex for scoring."""
     rule = get_rule(ruleset, "LMPC-R6-MANDATORY-DECLARATIONS")
     regex_str = FALLBACK_MRP_REGEX
     if rule and isinstance(rule.validations, dict):
@@ -309,7 +396,9 @@ def _mrp_pattern(ruleset: Ruleset) -> re.Pattern:
     return _compile_mrp_pattern(regex_str)
 
 
-def check_mrp(text: str, ruleset: Optional[Ruleset] = None) -> FieldResult:
+def check_mrp(
+    text: str, ruleset: Optional[Ruleset] = None, classified: Optional[ClassifiedField] = None
+) -> FieldResult:
     """
     Uses the mrp_format regex from legal_metrology_rules.json directly (compiled with
     MULTILINE so ^/$ apply per line rather than to the whole text - the regex as written
@@ -318,23 +407,38 @@ def check_mrp(text: str, ruleset: Optional[Ruleset] = None) -> FieldResult:
     line. That's a real quirk inherited from the ruleset JSON, not something fixed here.
     """
     field = "maximum_retail_price_mrp"
+    ambiguous = _ambiguous_result(field, classified)
+    if ambiguous:
+        return ambiguous
     ruleset = ruleset or load_ruleset()
-    if not text or not text.strip():
+    original_text = text
+    scan_text = _scan_text(text, classified)
+    if not scan_text or not scan_text.strip():
         return FieldResult(field=field, status="absent", compliant=False,
                             reason="No MRP declaration was found.")
-    pattern = _mrp_pattern(ruleset)
-    match = pattern.search(text)
+    pattern = mrp_pattern(ruleset)
+    match = pattern.search(scan_text)
     if not match:
         return FieldResult(
             field=field, status="absent", compliant=False,
             reason="No MRP value matching the expected currency format (e.g. 'Rs. 199.00' or "
                    "'₹199') was found.",
         )
-    window = text[max(0, match.start() - 60): min(len(text), match.end() + 80)]
+    extracted = match.group(0).strip()
+    # For the tax-inclusive proximity check, prefer locating the matched price within the
+    # ORIGINAL (un-narrowed) text: the classifier may have bundled only the keyword+price
+    # detections into `scan_text`, excluding a neighbouring "Inclusive of all taxes"
+    # detection it didn't pull in - that phrase is still real, nearby context that
+    # shouldn't be lost just because narrowing happened to leave it out.
+    was_narrowed = bool(classified and classified.combined_text.strip())
+    context = original_text if was_narrowed else scan_text
+    anchor = context.find(extracted)
+    anchor = anchor if anchor != -1 else 0
+    window = context[max(0, anchor - 60): min(len(context), anchor + len(extracted) + 80)]
     if TAX_INCLUSIVE_RE.search(window):
-        return FieldResult(field=field, status="present", extracted_value=match.group(0).strip(), compliant=True)
+        return FieldResult(field=field, status="present", extracted_value=extracted, compliant=True)
     return FieldResult(
-        field=field, status="present", extracted_value=match.group(0).strip(), compliant="needs_review",
+        field=field, status="present", extracted_value=extracted, compliant="needs_review",
         reason="MRP value detected, but wording confirming it is 'inclusive of all taxes' was not "
                "found nearby; OCR may have missed it - verify manually.",
     )
@@ -360,6 +464,7 @@ def check_unit_sale_price(
     text: str,
     net_quantity_result: Optional[FieldResult] = None,
     mrp_result: Optional[FieldResult] = None,
+    classified: Optional[ClassifiedField] = None,
 ) -> FieldResult:
     """
     Presence check for a per-unit price (e.g. '₹40/100g'). If net_quantity_result and
@@ -368,6 +473,10 @@ def check_unit_sale_price(
     misreads on any of the three numbers are common enough that auto-failing would be noisy.
     """
     field = "unit_sale_price"
+    ambiguous = _ambiguous_result(field, classified)
+    if ambiguous:
+        return ambiguous
+    text = _scan_text(text, classified)
     if not text or not text.strip():
         return FieldResult(field=field, status="absent", compliant=False,
                             reason="No unit sale price (price per unit quantity) was found.")
@@ -391,7 +500,7 @@ def check_unit_sale_price(
     extracted = numeric_match.group(0).strip()
     price = float(numeric_match.group("price"))
     mult = float(numeric_match.group("mult")) if numeric_match.group("mult") else 1.0
-    price_base = _to_base(mult, numeric_match.group("unit"))
+    price_base = to_base_amount(mult, numeric_match.group("unit"))
 
     if (
         not price_base
@@ -407,7 +516,7 @@ def check_unit_sale_price(
     if not qty_parsed or not mrp_value:
         return FieldResult(field=field, status="present", extracted_value=extracted, compliant=True)
 
-    qty_base = _to_base(*qty_parsed)
+    qty_base = to_base_amount(*qty_parsed)
     price_category, price_base_amount = price_base
     if not qty_base or qty_base[0] != price_category:
         return FieldResult(field=field, status="present", extracted_value=extracted, compliant=True)
@@ -436,10 +545,13 @@ def _consumer_care_fields(ruleset: Ruleset) -> List[str]:
     return ["name", "address", "telephone_number", "email_address"]
 
 
-def check_consumer_care_details(text: str, ruleset: Optional[Ruleset] = None) -> FieldResult:
+def check_consumer_care_details(
+    text: str, ruleset: Optional[Ruleset] = None, classified: Optional[ClassifiedField] = None
+) -> FieldResult:
     field = "consumer_care_details"
     ruleset = ruleset or load_ruleset()
     expected_fields = ", ".join(_consumer_care_fields(ruleset))
+    text = _scan_text(text, classified)
     if not text or not text.strip():
         return FieldResult(field=field, status="absent", compliant=False,
                             reason="No consumer-care phone number or email address was found.")
@@ -459,8 +571,9 @@ def check_consumer_care_details(text: str, ruleset: Optional[Ruleset] = None) ->
     )
 
 
-def check_country_of_origin(text: str) -> FieldResult:
+def check_country_of_origin(text: str, classified: Optional[ClassifiedField] = None) -> FieldResult:
     field = "country_of_origin"
+    text = _scan_text(text, classified)
     if text and text.strip():
         match = COUNTRY_ORIGIN_RE.search(text)
         if match:
@@ -495,21 +608,57 @@ def check_exemptions(
     weight_kg: Optional[float] = None,
     category: Optional[str] = None,
     product_context: Optional[Dict[str, Any]] = None,
+    ruleset: Optional[Ruleset] = None,
 ) -> Dict[str, Any]:
     """
-    Stub exemption check for Legal Metrology (Packaged Commodities) Rules exemptions
-    (e.g. small-package or agricultural-produce exemptions). We don't yet capture package
-    weight or product category anywhere upstream, so this always reports "no exemptions
-    apply". The signature already accepts weight_kg/category/product_context so a real
-    exemption ruleset can be wired in later without changing callers.
+    Exemption check for Legal Metrology (Packaged Commodities) Rules exemptions
+    (e.g. small-package or agricultural-produce carve-outs under Rule 26/34).
+
+    Phase 6: now genuinely parameter-aware - weight_kg/category/product_context are
+    actually read and echoed back in `context_considered`, rather than accepted and
+    ignored. But legal_metrology_rules.json defines NO exemption rules or thresholds at
+    all today (only the Rule 6 declaration requirements and the two General Rules
+    instrument-verification rules) - there is nothing authoritative in the ruleset to
+    evaluate weight/category against yet. Real LMPC exemption categories exist in law
+    (small-package and agricultural-produce carve-outs are commonly cited), but hardcoding
+    specific numeric thresholds here from general knowledge, unverified against the actual
+    ruleset, risks silently encoding legal specifics nobody has confirmed - so this
+    deliberately still returns exempt=False rather than guessing. When exemption
+    thresholds are added to legal_metrology_rules.json (e.g. an "exemptions" block,
+    mirroring how `frameworks`/`validation_profiles` are structured today), this function
+    should evaluate against THAT data - the same pattern run_compliance_check() already
+    uses for required_fields - not hardcode thresholds in Python.
     """
+    ruleset = ruleset or load_ruleset()
+    context: Dict[str, Any] = dict(product_context or {})
+    if weight_kg is not None:
+        context.setdefault("weight_kg", weight_kg)
+    if category is not None:
+        context.setdefault("category", category)
+
+    if not context:
+        return {
+            "exempt": False,
+            "applicable_exemptions": [],
+            "reason": (
+                "No package weight or product category data was provided, so exemption "
+                "status cannot be determined; assuming standard Rule 6 declarations apply."
+            ),
+            "context_considered": {},
+        }
+
     return {
         "exempt": False,
         "applicable_exemptions": [],
         "reason": (
-            "No package weight or product category data is available yet, so exemption "
-            "status cannot be determined; assuming standard Rule 6 declarations apply."
+            "Weight/category context was provided (see context_considered) but "
+            f"{ruleset.ruleset_id} does not yet define any exemption rules or thresholds "
+            "to evaluate it against - only Rule 6 declaration requirements are in the "
+            "ruleset today. This function is structured to apply real exemption logic "
+            "once that data exists in the ruleset; until then it conservatively assumes "
+            "no exemption applies rather than guessing at unverified thresholds."
         ),
+        "context_considered": context,
     }
 
 
@@ -521,11 +670,16 @@ def run_compliance_check(
     ocr_text: str,
     profile: str = "e_commerce_product_listing",
     ruleset: Optional[Ruleset] = None,
+    classified_fields: Optional[ClassifiedFields] = None,
 ) -> Dict[str, Any]:
     """
     Run every field validator required by `profile` against `ocr_text` and return a
     report: {profile, ruleset_id, ruleset_version, evaluated_rules, fields, violations,
     exemptions, overall_status, notes}.
+
+    `classified_fields` is optional (Phase 2, from field_classifier.classify_fields()) -
+    when given, each validator gets that field's narrowed ClassifiedField and prefers it
+    over scanning the whole of `ocr_text`; when omitted, behavior is identical to Phase 1.
 
     overall_status is "Non-Compliant" if any non-conditional field hard-fails,
     "Partially Compliant" if nothing hard-fails but something needs_review, else "Compliant".
@@ -559,14 +713,18 @@ def run_compliance_check(
         kwargs: Dict[str, Any] = {}
         if name in ("maximum_retail_price_mrp", "consumer_care_details"):
             kwargs["ruleset"] = ruleset
+        if classified_fields is not None:
+            kwargs["classified"] = classified_fields.get(name)
         field_results[name] = validator(ocr_text, **kwargs)
 
     if "unit_sale_price" in required_fields:
-        field_results["unit_sale_price"] = check_unit_sale_price(
-            ocr_text,
-            net_quantity_result=field_results.get("net_quantity"),
-            mrp_result=field_results.get("maximum_retail_price_mrp"),
-        )
+        unit_price_kwargs: Dict[str, Any] = {
+            "net_quantity_result": field_results.get("net_quantity"),
+            "mrp_result": field_results.get("maximum_retail_price_mrp"),
+        }
+        if classified_fields is not None:
+            unit_price_kwargs["classified"] = classified_fields.get("unit_sale_price")
+        field_results["unit_sale_price"] = check_unit_sale_price(ocr_text, **unit_price_kwargs)
 
     ordered_results = [field_results[name] for name in required_fields if name in field_results]
 

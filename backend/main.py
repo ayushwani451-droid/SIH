@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.api.ocr import router as ocr_router
 from backend.api.auth import router as auth_router
 from backend.api.manufacturer import router as manufacturer_router
+from backend.api.compliance import router as compliance_router
 from backend.database import close_mongodb, connect_to_mongodb
 
 logging.basicConfig(
@@ -67,6 +68,7 @@ app.add_middleware(
 app.include_router(ocr_router)
 app.include_router(auth_router)
 app.include_router(manufacturer_router)
+app.include_router(compliance_router)
 
 
 @app.get("/api/health")
