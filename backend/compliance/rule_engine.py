@@ -386,25 +386,38 @@ def _compile_mrp_pattern(regex_str: str) -> re.Pattern:
 
 
 def mrp_pattern(ruleset: Ruleset) -> re.Pattern:
-    """Public so field_classifier.py can reuse the exact same MRP-value regex for scoring."""
+    """
+    Public so field_classifier.py can reuse the exact same MRP-value regex for scoring.
+
+    Bug fix: the ruleset's mrp_format regex anchors each alternative to a full line
+    (^Rs\\.\\s?\\d+(\\.\\d{2})?|₹\\s?\\d+(\\.\\d{2})?$), which only matches a line that IS
+    just the price (e.g. a standalone "Rs. 60.00"). Real labels routinely combine the
+    label and price on one line ("MRP (Incl. of all taxes) ₹20.00"), which the anchored
+    pattern can never match. Rather than rewrite the shared ruleset JSON (a rule-content
+    decision that belongs to whoever owns it), the anchors are stripped here before
+    compiling: the ruleset still owns the underlying currency+number pattern, just not
+    its line-boundary requirement, so `Rs.`/`₹` followed by a number now matches anywhere
+    within a line via re.search - exactly the loosening requested, done in the Python
+    matching logic rather than the JSON.
+    """
     rule = get_rule(ruleset, "LMPC-R6-MANDATORY-DECLARATIONS")
     regex_str = FALLBACK_MRP_REGEX
     if rule and isinstance(rule.validations, dict):
         mrp_validation = rule.validations.get("mrp_format")
         if isinstance(mrp_validation, dict) and mrp_validation.get("regex"):
             regex_str = mrp_validation["regex"]
-    return _compile_mrp_pattern(regex_str)
+    unanchored = re.sub(r"[\^$]", "", regex_str)
+    return _compile_mrp_pattern(unanchored)
 
 
 def check_mrp(
     text: str, ruleset: Optional[Ruleset] = None, classified: Optional[ClassifiedField] = None
 ) -> FieldResult:
     """
-    Uses the mrp_format regex from legal_metrology_rules.json directly (compiled with
-    MULTILINE so ^/$ apply per line rather than to the whole text - the regex as written
-    anchors each alternative to a line boundary, which only matches a line that IS the
-    price, e.g. "Rs. 60.00" on its own OCR-detected line, not "MRP: Rs. 60.00" as one
-    line. That's a real quirk inherited from the ruleset JSON, not something fixed here.
+    Uses the mrp_format regex from legal_metrology_rules.json's underlying currency+number
+    pattern (see mrp_pattern() for the anchor-stripping fix) - matches "Rs."/"₹" followed
+    by a number anywhere in the text, so "MRP (Incl. of all taxes) Rs. 60.00" as one
+    combined OCR-detected line matches correctly, not just a standalone "Rs. 60.00" line.
     """
     field = "maximum_retail_price_mrp"
     ambiguous = _ambiguous_result(field, classified)

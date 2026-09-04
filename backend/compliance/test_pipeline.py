@@ -164,13 +164,15 @@ class RealPaddleOCROutputScenarioTests(unittest.TestCase):
         self.assertIn("1800-123-4567", by_field["consumer_care_details"].extracted_value)
         self.assertIn("care@sunriseconsumer.in", by_field["consumer_care_details"].extracted_value)
 
-    def test_mrp_is_absent_due_to_documented_ruleset_regex_quirk(self):
+    def test_mrp_combined_with_label_on_one_line_is_detected(self):
         # "MRP: Rs. 149.00 (Incl. of all taxes)" is ONE detection with "MRP:" before
-        # "Rs.", so the ruleset's own ^Rs\. anchored regex genuinely can't match it -
-        # this is the known limitation from Phase 2, reproduced here on real OCR text
-        # rather than asserted only in isolation.
+        # "Rs." - previously a known limitation (the ruleset's ^Rs\. anchored regex
+        # couldn't match mid-line), fixed by stripping the anchors in mrp_pattern().
+        # Reproduced here on real OCR text, not just asserted in isolation.
         by_field = {f.field: f for f in self.report.fields}
-        self.assertEqual(by_field["maximum_retail_price_mrp"].verdict, "Fail")
+        mrp_field = by_field["maximum_retail_price_mrp"]
+        self.assertEqual(mrp_field.verdict, "Pass")
+        self.assertIn("149.00", mrp_field.extracted_value)
 
     def test_best_before_is_not_mistaken_for_manufacture_date(self):
         by_field = {f.field: f for f in self.report.fields}
@@ -187,6 +189,71 @@ MULTI_FACE_CONFLICTING_MRP_LINES = [
     ("MRP", [10, 322, 60, 342]),
     ("Rs. 65.00", [10, 344, 120, 364]),
 ]
+
+
+# Modeled on a genuine Britannia Good Day biscuit packet - the exact scenario that
+# surfaced three real bugs: MRP combined with label text on one OCR line ("MRP (Incl. of
+# all taxes) ₹20.00"), a packing date (PKD) and an expiry date (USE BY) on separate
+# detections that were being conflated into one field, and Nutrition Information table
+# gram figures (Energy/Protein/Carbohydrate/Fat) being picked up as net quantity instead
+# of the real "NET WEIGHT: 75 g" declaration.
+BRITANNIA_GOOD_DAY_LINES = [
+    ("BRITANNIA Good Day", [10, 10, 300, 30]),
+    ("Cashew Almond Cookies", [10, 32, 300, 52]),
+    ("NET WEIGHT: 75 g", [10, 54, 250, 74]),
+    ("MRP (Incl. of all taxes) ₹20.00", [10, 76, 350, 96]),
+    ("Mfd by Britannia Industries Ltd, Mumbai, Maharashtra", [10, 98, 600, 118]),
+    ("PKD: 12/05/2024", [10, 120, 200, 140]),
+    ("USE BY: 11/11/2024", [10, 142, 220, 162]),
+    ("Consumer Care 1800-266-7676", [10, 164, 300, 184]),
+    ("care@britannia.co.in", [10, 186, 250, 206]),
+    ("Country of Origin: India", [10, 208, 300, 228]),
+    ("Nutrition Information", [10, 300, 250, 320]),
+    ("Per 100 g", [10, 322, 150, 342]),
+    ("Energy 468.7 g", [10, 344, 200, 364]),
+    ("Protein 6.4 g", [10, 366, 200, 386]),
+    ("Carbohydrate 68.7 g", [10, 388, 220, 408]),
+    ("Total Fat 21.2 g", [10, 410, 200, 430]),
+    ("Sugars 29.3 g", [10, 432, 200, 452]),
+    ("Sodium 10.3 g", [10, 454, 200, 474]),
+    ("Trans Fat 0.1 g", [10, 476, 200, 496]),
+]
+
+
+class RealLabelThreeBugScenarioTests(unittest.TestCase):
+    """End-to-end regression coverage for the three bugs found against a genuine label."""
+
+    def setUp(self):
+        self.report = run_full_compliance_pipeline(ocr_result(BRITANNIA_GOOD_DAY_LINES, image="good_day.jpg"))
+        self.by_field = {f.field: f for f in self.report.fields}
+
+    def test_bug1_mrp_combined_with_label_text_is_detected(self):
+        mrp = self.by_field["maximum_retail_price_mrp"]
+        self.assertEqual(mrp.verdict, "Pass")
+        self.assertIn("20.00", mrp.extracted_value)
+
+    def test_bug2_packing_date_is_detected_and_not_conflated_with_expiry(self):
+        date_field = self.by_field["month_and_year_of_manufacture_or_packing"]
+        self.assertEqual(date_field.verdict, "Pass")
+        self.assertNotEqual(date_field.status, "ambiguous")
+        self.assertNotIn("11/11/2024", date_field.extracted_value or "")
+
+    def test_bug3_net_quantity_is_75g_not_a_nutrition_table_figure(self):
+        net_qty = self.by_field["net_quantity"]
+        self.assertEqual(net_qty.verdict, "Pass")
+        self.assertIn("75", net_qty.extracted_value)
+        for bogus in ("6.4", "68.7", "21.2", "29.3", "10.3", "0.1", "468.7"):
+            self.assertNotIn(bogus, net_qty.extracted_value)
+
+    def test_overall_report_has_no_false_ambiguous_flags(self):
+        # None of the three real bugs should surface as "ambiguous"/needs_review noise -
+        # the only fields legitimately needing review are the ones honestly weak by design
+        # (generic name) or genuinely absent from this label (no unit sale price declared).
+        for field in self.report.fields:
+            if field.field in ("common_generic_name_of_commodity", "unit_sale_price"):
+                continue
+            with self.subTest(field=field.field):
+                self.assertNotEqual(field.status, "ambiguous")
 
 
 class MultiFaceLabelScenarioTests(unittest.TestCase):

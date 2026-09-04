@@ -59,7 +59,36 @@ from backend.compliance.rule_engine import (
 # happens to sit in the same or a neighbouring detection.
 EXPIRY_NEGATIVE_RE = re.compile(r"best\s+before|expir|exp\.?\s*date|use\s+by", re.IGNORECASE)
 
+# A net-quantity value-matcher must not grab a gram/ml figure from the Nutrition
+# Information table (Energy/Protein/Carbohydrate/Fat per-100g values use the exact same
+# "<number> g" shape as a real net-quantity declaration) that happens to sit in the same
+# or a neighbouring detection.
+NUTRITION_TABLE_NEGATIVE_RE = re.compile(
+    r"nutrition(?:al)?\s*(?:information|facts|value)?|energy|protein|carbohydrate|"
+    r"\btotal\s+fat\b|\bfat\b|per\s*100\s*g|approximate\s+value",
+    re.IGNORECASE,
+)
+
 LOOKAHEAD_WINDOW = 2  # how many following detections count as "nearby" for a keyword-only anchor
+PROXIMITY_WINDOW = 2  # how many detections before/after count as "nearby" for an exclusion check
+
+
+def _context_matches(index: int, ordered: "List[DetectionInput]", pattern: "re.Pattern", window: int) -> bool:
+    """
+    True if `pattern` matches the detection at `index` itself, or any detection within
+    `window` positions before/after it in reading order. Used to exclude a bare value
+    (e.g. a date, or a "75 g" figure) from a field when a disqualifying keyword sits on
+    a NEIGHBOURING OCR line rather than the same one - e.g. "USE BY" on one line and its
+    date on the very next, which a same-text-only check would miss entirely.
+    """
+    lo = max(0, index - window)
+    hi = min(len(ordered), index + window + 1)
+    return any(pattern.search(ordered[j].text) for j in range(lo, hi))
+
+
+def _has_own_keyword(text: str, keywords: "List[str]") -> bool:
+    lower = text.lower()
+    return any(kw in lower for kw in keywords)
 
 
 class DetectionInput(BaseModel):
@@ -236,13 +265,47 @@ def _classify_consumer_care(keywords: List[str], ordered: List[DetectionInput]) 
 
 
 def _classify_keyword_value_field(
-    field_name: str, keywords: List[str], matcher: ValueMatcher, ordered: List[DetectionInput]
+    field_name: str,
+    keywords: List[str],
+    matcher: ValueMatcher,
+    ordered: List[DetectionInput],
+    exclude_pattern: Optional["re.Pattern"] = None,
+    anchor_exclude_pattern: Optional["re.Pattern"] = None,
 ) -> ClassifiedField:
+    """
+    `exclude_pattern`, when given, disqualifies a BARE candidate (one with no keyword
+    evidence of its own) from being this field's value if it (or a neighbour within
+    PROXIMITY_WINDOW) matches - e.g. a date sitting near "USE BY" is never a
+    manufacture-date candidate, and a gram figure sitting near "Protein"/"Energy" is
+    never a net-quantity candidate, even when the disqualifying keyword is a separate
+    OCR detection from the value itself. It never overrides a candidate that carries the
+    field's OWN keyword - that's direct, positive evidence unrelated text nearby can't undo.
+
+    `anchor_exclude_pattern`, when given, disqualifies a detection from being this
+    field's keyword ANCHOR even though it contains one of `keywords` as a substring -
+    e.g. "mfd" is a legitimate date keyword ("MFD: 12/2024"), but "Mfd by Britannia..."
+    is the MANUFACTURER declaration, matched by MANUFACTURER_PREFIX_RE; without this, a
+    naive substring match would misattribute the date field's anchor to that line instead
+    of a real date-bearing one, and the ambiguity between fields is worse for the exact
+    same reason keyword collisions are handled via `claimed_by` in conflict detection.
+    """
+    def excluded(index: int, candidate_text: str) -> bool:
+        if _has_own_keyword(candidate_text, keywords):
+            return False
+        return bool(exclude_pattern and _context_matches(index, ordered, exclude_pattern, PROXIMITY_WINDOW))
+
     for i, det in enumerate(ordered):
+        # No excluded(i) check here: det.text carrying this field's OWN keyword is direct,
+        # positive evidence that must not be overridden just because unrelated text (e.g.
+        # a Best Before line, or a nutrition-table row) happens to sit nearby. Exclusion
+        # only matters for candidates that have no keyword evidence of their own - the
+        # lookahead and bare-fallback checks below.
         lower = det.text.lower()
         matched_keyword = next((kw for kw in keywords if kw in lower), None)
         if not matched_keyword:
             continue
+        if anchor_exclude_pattern and anchor_exclude_pattern.search(det.text):
+            continue  # keyword substring matched, but this line belongs to a different field
 
         if matcher(det.text):
             return ClassifiedField(
@@ -255,6 +318,8 @@ def _classify_keyword_value_field(
 
         for j in range(i + 1, min(i + 1 + LOOKAHEAD_WINDOW, len(ordered))):
             candidate = ordered[j]
+            if excluded(j, candidate.text):
+                continue
             if matcher(candidate.text):
                 return ClassifiedField(
                     field=field_name,
@@ -274,7 +339,9 @@ def _classify_keyword_value_field(
         )
 
     # No keyword anywhere; fall back to a bare value match anywhere in the text (low confidence).
-    for det in ordered:
+    for i, det in enumerate(ordered):
+        if excluded(i, det.text):
+            continue
         if matcher(det.text):
             return ClassifiedField(
                 field=field_name,
@@ -306,30 +373,47 @@ def _classify_keyword_value_field(
 # (multiple phone/email hits are complementary, not conflicting).
 # --------------------------------------------------------------------------
 
-def _normalize_net_quantity(text: str) -> Optional[Any]:
-    match = NET_QUANTITY_RE.search(text)
+# Normalizers are index-aware (index, detection, ordered) rather than just (text,) so
+# they can apply the same PROXIMITY_WINDOW exclusion the primary classifier uses (see
+# _classify_keyword_value_field) - a bare nutrition-table figure or expiry date sitting
+# near its disqualifying keyword on a NEIGHBOURING detection must be excluded from the
+# conflict scan too, not just from the keyword-anchored pass.
+Normalizer = Callable[[int, DetectionInput, List[DetectionInput]], Optional[Any]]
+
+
+def _normalize_net_quantity(index: int, det: DetectionInput, ordered: List[DetectionInput]) -> Optional[Any]:
+    # A detection carrying "net wt"/"net qty"/etc itself is direct evidence and must not
+    # be excluded just because an unrelated nutrition-table row sits nearby (e.g. a real
+    # "Rs 30 per 100g" unit-price line would otherwise get excluded by its own "per 100g").
+    if not _has_own_keyword(det.text, FIELD_KEYWORDS["net_quantity"]):
+        if _context_matches(index, ordered, NUTRITION_TABLE_NEGATIVE_RE, PROXIMITY_WINDOW):
+            return None  # a gram figure from the Nutrition Information table, not net quantity
+    match = NET_QUANTITY_RE.search(det.text)
     if not match:
         return None
     base = to_base_amount(float(match.group(1)), match.group(2))
     return (base[0], round(base[1], 4)) if base else None
 
 
-def _normalize_date(text: str) -> Optional[Any]:
-    if EXPIRY_NEGATIVE_RE.search(text):
-        return None  # never treat an expiry/best-before line as a manufacture-date candidate
-    match = MONTH_NAME_DATE_RE.search(text)
+def _normalize_date(index: int, det: DetectionInput, ordered: List[DetectionInput]) -> Optional[Any]:
+    # Same reasoning as _normalize_net_quantity: a detection with its own MFG-style
+    # keyword is direct evidence, not overridden by an unrelated expiry line nearby.
+    if not _has_own_keyword(det.text, FIELD_KEYWORDS["month_and_year_of_manufacture_or_packing"]):
+        if _context_matches(index, ordered, EXPIRY_NEGATIVE_RE, PROXIMITY_WINDOW):
+            return None  # never treat an expiry/best-before/use-by date as a manufacture-date candidate
+    match = MONTH_NAME_DATE_RE.search(det.text)
     if match:
         month = MONTH_NAMES.get(match.group(1)[:3].lower())
         if month:
             return int(match.group(2)), month
-    match = NUMERIC_DATE_RE.search(text)
+    match = NUMERIC_DATE_RE.search(det.text)
     if match:
         return int(match.group(2)), int(match.group(1))
     return None
 
 
-def _normalize_unit_price(text: str) -> Optional[Any]:
-    match = UNIT_PRICE_NUMERIC_RE.search(text)
+def _normalize_unit_price(index: int, det: DetectionInput, ordered: List[DetectionInput]) -> Optional[Any]:
+    match = UNIT_PRICE_NUMERIC_RE.search(det.text)
     if not match:
         return None
     mult = float(match.group("mult")) if match.group("mult") else 1.0
@@ -340,11 +424,11 @@ def _normalize_unit_price(text: str) -> Optional[Any]:
     return category, round(float(match.group("price")) / base_amount, 6)
 
 
-def _make_mrp_normalizer(ruleset: Ruleset) -> Callable[[str], Optional[float]]:
+def _make_mrp_normalizer(ruleset: Ruleset) -> Normalizer:
     pattern = mrp_pattern(ruleset)
 
-    def normalize(text: str) -> Optional[float]:
-        match = pattern.search(text)
+    def normalize(index: int, det: DetectionInput, ordered: List[DetectionInput]) -> Optional[float]:
+        match = pattern.search(det.text)
         if not match:
             return None
         digits = re.search(r"(\d+(?:\.\d{1,2})?)", match.group(0))
@@ -359,7 +443,7 @@ def _detection_key(det: DetectionInput) -> Any:
 
 def _detect_value_conflicts(
     field_name: str,
-    normalizer: Callable[[str], Optional[Any]],
+    normalizer: Normalizer,
     ordered: List[DetectionInput],
     claimed_by: Dict[Any, str],
 ) -> Optional[ClassifiedField]:
@@ -372,11 +456,11 @@ def _detect_value_conflicts(
     conflicting net_quantity value, which it isn't.
     """
     groups: Dict[Any, DetectionInput] = {}
-    for det in ordered:
+    for i, det in enumerate(ordered):
         owner = claimed_by.get(_detection_key(det))
         if owner is not None and owner != field_name:
             continue
-        key = normalizer(det.text)
+        key = normalizer(i, det, ordered)
         if key is not None and key not in groups:
             groups[key] = det  # keep the first detection seen for each distinct value
 
@@ -413,11 +497,25 @@ def classify_fields(
     for field_name, matcher in FUSED_FIELD_MATCHERS.items():
         fields[field_name] = _classify_fused_field(field_name, matcher, ordered)
 
+    field_exclusions: Dict[str, "re.Pattern"] = {
+        "month_and_year_of_manufacture_or_packing": EXPIRY_NEGATIVE_RE,
+        "net_quantity": NUTRITION_TABLE_NEGATIVE_RE,
+    }
+    # "mfd"/"mfg" are legitimate date keywords ("MFD: 12/2024") but also substrings of
+    # "Mfd by ..."/"Manufactured by ..." - the manufacturer declaration, not a date. Without
+    # this, that line would wrongly anchor the date field instead of a real date-bearing one.
+    anchor_exclusions: Dict[str, "re.Pattern"] = {
+        "month_and_year_of_manufacture_or_packing": MANUFACTURER_PREFIX_RE,
+    }
     for field_name, keywords in FIELD_KEYWORDS.items():
         if field_name == "consumer_care_details":
             fields[field_name] = _classify_consumer_care(keywords, ordered)
         else:
-            fields[field_name] = _classify_keyword_value_field(field_name, keywords, matchers[field_name], ordered)
+            fields[field_name] = _classify_keyword_value_field(
+                field_name, keywords, matchers[field_name], ordered,
+                exclude_pattern=field_exclusions.get(field_name),
+                anchor_exclude_pattern=anchor_exclusions.get(field_name),
+            )
 
     # common_generic_name_of_commodity is intentionally never classified here - see module docstring.
     fields["common_generic_name_of_commodity"] = ClassifiedField(field="common_generic_name_of_commodity")
@@ -427,7 +525,7 @@ def classify_fields(
         for md in cf.matched_detections:
             claimed_by[(md.text, tuple(md.bbox))] = fname
 
-    conflict_normalizers: Dict[str, Callable[[str], Optional[Any]]] = {
+    conflict_normalizers: Dict[str, Normalizer] = {
         "net_quantity": _normalize_net_quantity,
         "month_and_year_of_manufacture_or_packing": _normalize_date,
         "maximum_retail_price_mrp": _make_mrp_normalizer(ruleset),

@@ -106,14 +106,23 @@ class FieldValidatorTests(unittest.TestCase):
         self.assertEqual(result.status, "present")
         self.assertEqual(result.compliant, "needs_review")
 
-    def test_mrp_absent_when_currency_not_at_line_boundary(self):
-        # Known quirk inherited from the ruleset's own regex: "MRP: Rs. 199.00" as a single
-        # line does NOT match, because the ^Rs\. alternative requires Rs. at the very start
-        # of the line. Documented in check_mrp's docstring, verified here so a future change
-        # to the JSON regex (or this engine) that silently "fixes" it doesn't go unnoticed.
+    def test_mrp_matches_when_combined_with_label_on_one_line(self):
+        # Regression test for the bug where the ruleset's ^Rs\.../₹...$ anchors required
+        # the price to BE the entire line - real labels combine label and price on one
+        # OCR-detected line ("MRP (Incl. of all taxes) Rs. 199.00"), which now matches
+        # since mrp_pattern() strips the anchors before compiling.
         text = "MRP: Rs. 199.00 (inclusive of all taxes)"
         result = check_mrp(text)
-        self.assertEqual(result.status, "absent")
+        self.assertEqual(result.status, "present")
+        self.assertTrue(result.compliant)
+        self.assertIn("199.00", result.extracted_value)
+
+    def test_mrp_matches_rupee_symbol_combined_with_label(self):
+        text = "MRP (Incl. of all taxes) ₹20.00"
+        result = check_mrp(text)
+        self.assertEqual(result.status, "present")
+        self.assertTrue(result.compliant)
+        self.assertIn("20.00", result.extracted_value)
 
     def test_consumer_care_finds_phone_and_email(self):
         result = check_consumer_care_details("Consumer Care 1800-123-4567\ncare@brand.example.com")

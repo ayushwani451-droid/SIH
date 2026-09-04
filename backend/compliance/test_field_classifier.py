@@ -160,6 +160,83 @@ class ConflictDetectionTests(unittest.TestCase):
         self.assertFalse(field.ambiguous)
 
 
+class RealLabelBugRegressionTests(unittest.TestCase):
+    """
+    Regression tests for three specific bugs found testing against a genuine product
+    label (Britannia Good Day biscuits): MRP combined with label text on one OCR line,
+    packing/expiry dates on separate detections getting conflated into one field, and
+    Nutrition Information table figures being mistaken for net quantity.
+    """
+
+    def test_pkd_and_use_by_dates_on_separate_detections_are_not_conflated(self):
+        # Realistic split: "PKD"/"USE BY" and their dates often land as four separate
+        # OCR detections, not two combined lines. A manufacturer line with "Mfd by" sits
+        # in between too, since that's a real source of keyword collision (see below).
+        detections = [
+            det("Mfd by Britannia Industries Ltd, Mumbai", bbox=[10, 10, 400, 30]),
+            det("PKD: 12/05/2024", bbox=[10, 32, 200, 52]),
+            det("USE BY: 11/11/2024", bbox=[10, 54, 220, 74]),
+        ]
+        full_text = "\n".join(d.text for d in detections)
+        result = classify_fields(full_text, detections)
+        field = result.get("month_and_year_of_manufacture_or_packing")
+        self.assertFalse(field.ambiguous, "PKD and USE BY must not be flagged as conflicting values of one field")
+        self.assertIn("2024", field.combined_text)
+        self.assertNotIn("11/11/2024", field.combined_text)
+        self.assertNotIn("USE BY", field.combined_text.upper())
+
+    def test_manufacturer_line_does_not_falsely_anchor_the_date_field(self):
+        # "Mfd by ..." contains the substring "mfd", which is also a legitimate date
+        # keyword ("MFD: 12/2024") - it must not be mistaken for a date-field anchor.
+        detections = [
+            det("Mfd by Britannia Industries Ltd, Mumbai", bbox=[10, 10, 400, 30]),
+            det("PKD: 12/05/2024", bbox=[10, 32, 200, 52]),
+        ]
+        full_text = "\n".join(d.text for d in detections)
+        result = classify_fields(full_text, detections)
+        field = result.get("month_and_year_of_manufacture_or_packing")
+        # Anchor must come from the PKD line's own text, not from "Mfd by Britannia...".
+        self.assertIn("PKD", field.combined_text)
+        self.assertNotIn("Britannia", field.combined_text)
+
+    def test_net_quantity_ignores_nutrition_table_even_with_no_other_gram_values(self):
+        detections = [
+            det("Nutrition Information", bbox=[10, 300, 250, 320]),
+            det("Per 100 g", bbox=[10, 322, 150, 342]),
+            det("Energy 468.7 g", bbox=[10, 344, 200, 364]),
+            det("Protein 6.4 g", bbox=[10, 366, 200, 386]),
+            det("Carbohydrate 68.7 g", bbox=[10, 388, 220, 408]),
+            det("Total Fat 21.2 g", bbox=[10, 410, 200, 430]),
+        ]
+        full_text = "\n".join(d.text for d in detections)
+        result = classify_fields(full_text, detections)
+        field = result.get("net_quantity")
+        # No real net-quantity keyword ("Net Wt" etc.) anywhere on this label at all - the
+        # engine must not grab a nutrition-table figure as a fallback guess.
+        self.assertIsNone(field.confidence)
+        self.assertEqual(field.matched_detections, [])
+
+    def test_net_quantity_finds_net_weight_and_ignores_nutrition_table_alongside_it(self):
+        detections = [
+            det("NET WEIGHT: 75 g", bbox=[10, 54, 250, 74]),
+            det("Nutrition Information", bbox=[10, 300, 250, 320]),
+            det("Per 100 g", bbox=[10, 322, 150, 342]),
+            det("Energy 468.7 g", bbox=[10, 344, 200, 364]),
+            det("Protein 6.4 g", bbox=[10, 366, 200, 386]),
+            det("Carbohydrate 68.7 g", bbox=[10, 388, 220, 408]),
+            det("Total Fat 21.2 g", bbox=[10, 410, 200, 430]),
+            det("Sugars 29.3 g", bbox=[10, 432, 200, 452]),
+            det("Sodium 10.3 g", bbox=[10, 454, 200, 474]),
+            det("Trans Fat 0.1 g", bbox=[10, 476, 200, 496]),
+        ]
+        full_text = "\n".join(d.text for d in detections)
+        result = classify_fields(full_text, detections)
+        field = result.get("net_quantity")
+        self.assertEqual(field.confidence, "high")
+        self.assertIn("75", field.combined_text)
+        self.assertFalse(field.ambiguous, "nutrition-table figures must not be treated as conflicting net quantities")
+
+
 class ValidatorConsumesClassifiedFieldTests(unittest.TestCase):
     """Confirms rule_engine's Phase-2 `classified` param actually narrows the scan, using
     real classify_fields() output rather than hand-built ClassifiedField objects."""
