@@ -61,7 +61,16 @@ class FieldValidatorTests(unittest.TestCase):
         self.assertFalse(result.compliant)
 
     def test_manufacturer_details_recognizes_common_prefixes(self):
-        for line in ("Mfd by Acme Foods, Delhi", "Packed by Acme Foods", "Marketed by Acme Traders"):
+        for line in (
+            "Mfd by Acme Foods, Delhi",
+            "Packed by Acme Foods",
+            "Marketed by Acme Traders",
+            # Real-world variants (found on a genuine Parle-G label) - "manufactured FOR"
+            # denotes a contract-manufacturing arrangement, still a valid Rule 6 declaration.
+            "MANUFACTURED FOR Parle Biscuits Pvt. Ltd.",
+            "Packed for Acme Foods, Mumbai",
+            "Mfd for Acme Foods",
+        ):
             with self.subTest(line=line):
                 result = check_manufacturer_packer_importer_details(line)
                 self.assertEqual(result.status, "present")
@@ -145,6 +154,21 @@ class FieldValidatorTests(unittest.TestCase):
 
     def test_country_of_origin_present(self):
         result = check_country_of_origin("Country of Origin India")
+        self.assertEqual(result.status, "present")
+        self.assertTrue(result.compliant)
+
+    def test_country_of_origin_not_falsely_matched_inside_original(self):
+        # Regression test: "origin" without a word boundary matched as a substring of
+        # "Original" - found on a real Parle-G label ("Original Glucose Biscuits" has no
+        # actual country-of-origin declaration at all, but was misread as one).
+        result = check_country_of_origin("Original Glucose Biscuits")
+        self.assertEqual(result.status, "absent")
+        self.assertTrue(result.compliant)  # conditional field - absence is not a violation
+        self.assertIsNone(result.extracted_value)
+
+    def test_country_of_origin_bare_word_with_boundary_still_matches(self):
+        # The word-boundary fix must not stop recognizing a real bare "Origin:" label.
+        result = check_country_of_origin("Origin: India")
         self.assertEqual(result.status, "present")
         self.assertTrue(result.compliant)
 

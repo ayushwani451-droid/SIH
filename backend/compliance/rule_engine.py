@@ -214,7 +214,14 @@ def _ambiguous_result(field: str, classified: Optional[ClassifiedField]) -> Opti
 # --------------------------------------------------------------------------
 
 MANUFACTURER_PREFIX_RE = re.compile(
-    r"(?:mfd\.?\s*by|manufactured\s+by|packed\s+by|packer\s*:|marketed\s+by|imported\s+by)\s*[:\-]?\s*(.{3,80})",
+    # The separator between the matched prefix and the captured value is deliberately
+    # [ \t]* (horizontal whitespace only), NOT \s* - \s matches newlines too, which let
+    # a prefix with nothing after it on its own OCR line (e.g. "MANUFACTURED FOR" as a
+    # bare column header, found on a real Parle-G label's 3-column layout) skip PAST the
+    # newline and capture an entirely unrelated next line ("NUTRITION INFORMATION") as
+    # if it were the manufacturer's name. Same reasoning for packer\s*: -> packer[ \t]*:.
+    r"(?:mfd\.?\s*(?:by|for)|manufactured\s+(?:by|for)|packed\s+(?:by|for)|packer[ \t]*:|"
+    r"marketed\s+by|imported\s+by)[ \t]*[:\-]?[ \t]*(.{3,80})",
     re.IGNORECASE,
 )
 
@@ -251,7 +258,11 @@ PHONE_RE = re.compile(
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 COUNTRY_ORIGIN_RE = re.compile(
-    r"(?:country\s+of\s+origin|made\s+in|origin)\s*[:\-]?\s*([A-Za-z][A-Za-z \-]{1,30})",
+    # \borigin\b (not bare "origin") - without the word boundary, "origin" matches as a
+    # substring inside unrelated words like "Original" (e.g. "Original Glucose Biscuits"
+    # falsely read as a country-of-origin declaration for "al Glu..."). country\s+of\s+origin
+    # and made\s+in are unaffected - they already require the full phrase, not a bare word.
+    r"(?:country\s+of\s+origin|made\s+in|\borigin\b)\s*[:\-]?\s*([A-Za-z][A-Za-z \-]{1,30})",
     re.IGNORECASE,
 )
 

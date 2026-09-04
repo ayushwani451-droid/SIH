@@ -8,9 +8,13 @@ Run with:
 """
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
+from backend.compliance.llm_classifier import LLMClassificationError, LLMUsage
 from backend.compliance.pipeline import run_full_compliance_pipeline
+from backend.compliance.rule_engine import ClassifiedField, ClassifiedFields
 from backend.ocr.schemas import Detection, OCRResult
 
 
@@ -308,6 +312,96 @@ class BlurryOrPartialScanEdgeCaseTests(unittest.TestCase):
         self.assertEqual(report.overall_status, "Unknown")
         self.assertEqual(report.fields, [])
         self.assertTrue(report.notes)
+
+
+SIMPLE_OCR_RESULT = OCRResult(
+    success=True, image="label.jpg", full_text="Random label text with no recognizable fields",
+    detections=[det("Random label text with no recognizable fields", [10, 10, 300, 30])],
+    detection_count=1, preprocessing_applied=False,
+)
+
+
+class ClassifierModeTests(unittest.TestCase):
+    """
+    COMPLIANCE_CLASSIFIER_MODE switching in pipeline.py. The LLM side is always mocked
+    here (no real network call, no cost, fully deterministic) - live Groq integration is
+    covered separately by test_llm_classifier.py's gated LiveGroqSmokeTest.
+    """
+
+    def setUp(self):
+        # Ensure no leftover env var from another test/process affects this one.
+        self._original_mode = os.environ.pop("COMPLIANCE_CLASSIFIER_MODE", None)
+
+    def tearDown(self):
+        if self._original_mode is not None:
+            os.environ["COMPLIANCE_CLASSIFIER_MODE"] = self._original_mode
+        else:
+            os.environ.pop("COMPLIANCE_CLASSIFIER_MODE", None)
+
+    def test_default_mode_is_regex_and_never_touches_llm(self):
+        with patch("backend.compliance.pipeline.classify_fields_with_llm") as mock_llm:
+            report = run_full_compliance_pipeline(SIMPLE_OCR_RESULT)
+        mock_llm.assert_not_called()
+        self.assertEqual(report.overall_status, "Non-Compliant")
+
+    def test_unknown_mode_value_falls_back_to_regex(self):
+        os.environ["COMPLIANCE_CLASSIFIER_MODE"] = "not_a_real_mode"
+        with patch("backend.compliance.pipeline.classify_fields_with_llm") as mock_llm:
+            run_full_compliance_pipeline(SIMPLE_OCR_RESULT)
+        mock_llm.assert_not_called()
+
+    def test_llm_mode_falls_back_to_regex_cleanly_when_llm_unavailable(self):
+        os.environ["COMPLIANCE_CLASSIFIER_MODE"] = "llm"
+        with patch("backend.compliance.pipeline.classify_fields_with_llm") as mock_llm:
+            mock_llm.side_effect = LLMClassificationError("no key configured")
+            report = run_full_compliance_pipeline(SIMPLE_OCR_RESULT)  # must not raise
+        self.assertEqual(report.overall_status, "Non-Compliant")
+        self.assertTrue(any("unavailable" in n for n in report.notes))
+
+    def test_llm_mode_uses_llm_result_when_available(self):
+        os.environ["COMPLIANCE_CLASSIFIER_MODE"] = "llm"
+        fake_fields = ClassifiedFields(fields={
+            "net_quantity": ClassifiedField(
+                field="net_quantity", confidence="high", combined_text="200 g",
+            ),
+        }, full_text=SIMPLE_OCR_RESULT.full_text)
+        fake_usage = LLMUsage(prompt_tokens=100, completion_tokens=50, elapsed_seconds=1.0)
+        with patch("backend.compliance.pipeline.classify_fields_with_llm") as mock_llm:
+            mock_llm.return_value = (fake_fields, fake_usage, None)
+            report = run_full_compliance_pipeline(SIMPLE_OCR_RESULT)
+        by_field = {f.field: f for f in report.fields}
+        self.assertEqual(by_field["net_quantity"].verdict, "Pass")
+        self.assertTrue(any("tokens" in n for n in report.notes))
+
+    def test_hybrid_mode_flags_disagreement_between_classifiers(self):
+        os.environ["COMPLIANCE_CLASSIFIER_MODE"] = "hybrid"
+        # Regex finds nothing in SIMPLE_OCR_RESULT's text (net_quantity -> Fail); the
+        # mocked LLM claims a real value (net_quantity -> Pass) - a genuine disagreement.
+        fake_fields = ClassifiedFields(fields={
+            "net_quantity": ClassifiedField(
+                field="net_quantity", confidence="high", combined_text="200 g",
+            ),
+        }, full_text=SIMPLE_OCR_RESULT.full_text)
+        fake_usage = LLMUsage(prompt_tokens=100, completion_tokens=50, elapsed_seconds=1.0)
+        with patch("backend.compliance.pipeline.classify_fields_with_llm") as mock_llm:
+            mock_llm.return_value = (fake_fields, fake_usage, None)
+            report = run_full_compliance_pipeline(SIMPLE_OCR_RESULT)
+
+        # Hybrid reports from regex - net_quantity should still read as regex's (Fail).
+        by_field = {f.field: f for f in report.fields}
+        self.assertEqual(by_field["net_quantity"].verdict, "Fail")
+        # But the disagreement must be called out for a human to see.
+        self.assertTrue(any("disagreement" in n.lower() and "net quantity" in n.lower() for n in report.notes))
+
+    def test_hybrid_mode_no_notes_when_llm_and_regex_agree(self):
+        os.environ["COMPLIANCE_CLASSIFIER_MODE"] = "hybrid"
+        with patch("backend.compliance.pipeline.classify_fields_with_llm") as mock_llm:
+            mock_llm.side_effect = LLMClassificationError("simulated outage")
+            report = run_full_compliance_pipeline(SIMPLE_OCR_RESULT)
+        # LLM failed in hybrid mode -> regex-only result, with an unavailability note,
+        # but no false "disagreement" notes should appear since there's nothing to compare.
+        self.assertFalse(any("disagreement" in n.lower() for n in report.notes))
+        self.assertTrue(any("unavailable" in n for n in report.notes))
 
 
 if __name__ == "__main__":
