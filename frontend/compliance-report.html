@@ -156,7 +156,6 @@
     </script>
 <style>
         body { font-family: 'Inter', sans-serif; background-color: #F8F9FA; }
-        .bounding-box { border: 2px solid #00274a; position: absolute; background-color: rgba(0, 39, 74, 0.1); }
     </style>
 </head>
 <body class="bg-background text-on-background flex min-h-screen font-body-md">
@@ -248,15 +247,12 @@
 <h1 class="text-headline-lg font-headline-lg text-primary mb-1" id="report-product-name">Compliance Report</h1>
 <p class="text-body-md font-body-md text-on-surface-variant" id="report-subtitle">Automated packaging scan against Legal Metrology Rules, 2011.</p>
 </div>
-<div class="flex items-center gap-3">
-<span class="text-body-md font-body-md text-on-surface-variant">Overall Score:</span>
-<div class="flex items-center gap-2 bg-tertiary-fixed-dim/20 text-tertiary-container px-4 py-2 rounded font-bold border border-tertiary-fixed-dim/50 shadow-sm" id="report-score-badge">
-<span class="material-symbols-outlined" id="report-score-icon">warning</span>
-<span class="text-headline-md font-headline-md" id="report-score-value">60%</span>
 </div>
 </div>
-</div>
-</div>
+<!-- The compact score pill this page used to show here is gone - overall status now lives
+     in the one big verdict banner below (assets/compliance-report-ui.js), driven by the
+     real GET /api/ocr/compliance/{scan_id} response, so there's a single source of truth
+     instead of two badges that could disagree. -->
 <div class="hidden bg-surface-container-lowest border border-outline-variant rounded-xl p-12 text-center" id="report-not-found">
 <span class="material-symbols-outlined text-5xl text-on-surface-variant mb-4">search_off</span>
 <h2 class="text-headline-md font-headline-md text-primary mb-2">Report Not Found</h2>
@@ -265,44 +261,32 @@
 </div>
 <!-- Two Column Layout -->
 <div class="grid grid-cols-1 lg:grid-cols-12 gap-8" id="report-content">
-<!-- Left: Uploaded Image Area -->
+<!-- Left: Source Evidence - the original uploaded image is never persisted by the
+     backend (POST /api/scans discards the temp file once OCR completes), so there is
+     no real photo to show for a past scan. Showing a placeholder photo here (as this
+     page previously did) would be misleading, so this is an honest empty state instead. -->
 <div class="lg:col-span-7 flex flex-col gap-4">
 <div class="bg-surface border border-outline-variant rounded-xl p-4 shadow-sm flex flex-col h-full">
 <div class="flex justify-between items-center mb-4">
 <h3 class="text-body-lg font-body-lg font-bold text-primary">Source Evidence</h3>
-<div class="flex gap-2">
-<button class="p-1.5 text-on-surface-variant hover:bg-surface-container-low rounded"><span class="material-symbols-outlined text-[20px]">zoom_in</span></button>
-<button class="p-1.5 text-on-surface-variant hover:bg-surface-container-low rounded"><span class="material-symbols-outlined text-[20px]">zoom_out</span></button>
 </div>
-</div>
-<div class="relative w-full h-[500px] bg-surface-container-low rounded border border-outline-variant overflow-hidden">
-<!-- Image Container -->
-<div class="absolute inset-0 p-4 flex items-center justify-center">
-<div class="relative max-w-full max-h-full">
-<img alt="Detergent Label Scan" class="max-w-full max-h-full object-contain shadow-md" data-alt="A high-resolution photograph of the back panel of a typical laundry detergent box. The label features dense, small text containing product details like Manufacturer, MRP, Net Weight, and Consumer Care details. The lighting is even and bright, mimicking a studio product shot or a high-quality scan intended for optical character recognition. The aesthetic is clean, clinical, and objective." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDCXCkcwseihh6wbLAUghtNjK4kELYDeBXfYy03qFcy8KOoq-xJVeX1Ms-Z-3rx1U6sWvx6Hk78Z4HlxeDKsOQKiqrJL2IltT6S1j7Lh_52u_XCRuUzsK9O_fdB2470l4c4x6pXJVGWGM9tqGhOxRPWvFd56cyI8ix912MDbNQ0z6kDeuCCLc-GMSkedDt_odiEURQrDySpRv9VZcCp9x-PozzQf37_BTSUiJTmap8uTXgc5H6zqn7m"/>
-<!-- Bounding Boxes Overlay (Simulated) -->
-<div class="bounding-box" style="top: 15%; left: 10%; width: 40%; height: 8%;" title="Manufacturer Details Detected">
-<span class="absolute -top-6 left-0 bg-primary text-on-primary text-[10px] px-1 font-mono rounded-sm shadow">MANUFACTURER</span>
-</div>
-<div class="bounding-box border-error bg-error-container/20" style="top: 35%; left: 10%; width: 25%; height: 6%;" title="Net Weight Error">
-<span class="absolute -top-6 left-0 bg-error text-on-error text-[10px] px-1 font-mono rounded-sm shadow">NET_QTY</span>
-</div>
-<div class="bounding-box" style="top: 45%; left: 10%; width: 20%; height: 6%;" title="MRP Detected">
-<span class="absolute -top-6 left-0 bg-primary text-on-primary text-[10px] px-1 font-mono rounded-sm shadow">MRP</span>
+<div class="relative w-full h-[500px] bg-surface-container-low rounded border border-outline-variant overflow-hidden flex items-center justify-center">
+<div class="text-center px-10">
+<span class="material-symbols-outlined text-5xl text-on-surface-variant mb-3">image_not_supported</span>
+<h4 class="text-body-lg font-body-lg font-bold text-on-surface mb-1">Original Image Not Stored</h4>
+<p class="text-body-md font-body-md text-on-surface-variant">This scan's photo was not retained after processing - only the extracted text and compliance result were saved. The checklist to the right reflects the real result from this scan.</p>
 </div>
 </div>
 </div>
 </div>
-</div>
-</div>
-<!-- Right: Field Checklist -->
+<!-- Right: real Compliance Report, from GET /api/ocr/compliance/{scan_id} -->
 <div class="lg:col-span-5 flex flex-col gap-4">
-<div class="bg-surface border border-outline-variant rounded-xl p-6 shadow-sm flex-1">
-<h3 class="text-body-lg font-body-lg font-bold text-primary mb-6 flex items-center gap-2 border-b border-outline-variant pb-3">
-<span class="material-symbols-outlined">checklist</span>
-                            Rule 6 Declaration Checklist
-                        </h3>
-<div class="flex flex-col gap-3" id="report-findings"></div>
+<div class="bg-surface border border-outline-variant rounded-xl shadow-sm flex-1 overflow-hidden">
+<div class="px-6 py-4 border-b border-outline-variant bg-surface-container-low flex items-center gap-2">
+<span class="material-symbols-outlined text-primary">policy</span>
+<h3 class="text-body-lg font-body-lg font-bold text-primary">Compliance Report</h3>
+</div>
+<div class="p-6" id="compliance-report-body"></div>
 </div>
 </div>
 </div>
@@ -331,58 +315,64 @@
 <script src="assets/auth-client.js"></script>
 <script src="assets/official-header.js"></script>
 <script src="assets/ocr-client.js"></script>
+<script src="assets/compliance-client.js"></script>
+<script src="assets/compliance-report-ui.js"></script>
 <script>
     if (LL.requireRole('official')) {
-                var scanId = LL.qs('id');
+        var scanId = LL.qs('id');
+        var complianceReportBody = document.getElementById('compliance-report-body');
 
-                LLOcr.getScan(scanId).then(function (scan) {
-                if (!scan) {
-            document.getElementById('report-content').classList.add('hidden');
-            document.getElementById('report-not-found').classList.remove('hidden');
-            document.getElementById('report-breadcrumb').textContent = 'Report #' + scanId;
-            document.getElementById('report-product-name').textContent = 'Compliance Report';
-            document.getElementById('report-subtitle').textContent = 'No scan record matches this ID.';
-            document.querySelector('#report-score-badge').closest('.flex.items-center.gap-3').classList.add('hidden');
-        } else {
+        function runComplianceCheck(id) {
+            complianceReportBody.innerHTML =
+                '<div class="flex items-center gap-3 text-on-surface-variant">' +
+                '<span class="material-symbols-outlined animate-spin">progress_activity</span>' +
+                '<span>Running Legal Metrology compliance check&hellip;</span></div>';
+
+            LLCompliance.getCompliance(id).then(function (result) {
+                if (result.status === 202) {
+                    complianceReportBody.innerHTML =
+                        '<div class="flex items-start gap-3 text-tertiary-container">' +
+                        '<span class="material-symbols-outlined">hourglass_top</span>' +
+                        '<p>' + LL.escapeHtml((result.data && result.data.detail) || 'OCR has not completed successfully yet for this scan.') + '</p></div>';
+                    return;
+                }
+                if (result.status === 404) {
+                    complianceReportBody.innerHTML =
+                        '<div class="flex items-start gap-3 text-error">' +
+                        '<span class="material-symbols-outlined">error</span>' +
+                        '<p>Scan not found - the compliance check could not run.</p></div>';
+                    return;
+                }
+                if (!result.httpOk || !result.data) {
+                    var detail = (result.data && result.data.detail) || 'The compliance check request failed.';
+                    complianceReportBody.innerHTML =
+                        '<div class="flex items-start gap-3 text-error">' +
+                        '<span class="material-symbols-outlined">error</span>' +
+                        '<div><p class="font-bold">Compliance check failed</p>' +
+                        '<p class="text-body-md font-body-md text-on-surface-variant">' + LL.escapeHtml(detail) + '</p></div></div>';
+                    return;
+                }
+
+                // No previewWrap/previewCard: this page has no stored image to color-code or
+                // link boxes against (see the Source Evidence panel's note) - the shared
+                // renderer handles that gracefully, just rendering banner+violations+checklist.
+                LLComplianceUI.renderComplianceReport(result.data, complianceReportBody, {});
+            });
+        }
+
+        LLOcr.getScan(scanId).then(function (scan) {
+            if (!scan) {
+                document.getElementById('report-content').classList.add('hidden');
+                document.getElementById('report-not-found').classList.remove('hidden');
+                document.getElementById('report-breadcrumb').textContent = 'Report #' + scanId;
+                document.getElementById('report-product-name').textContent = 'Compliance Report';
+                document.getElementById('report-subtitle').textContent = 'No scan record matches this ID.';
+                return;
+            }
+
             document.getElementById('report-breadcrumb').textContent = 'Report #' + scan.id;
             document.getElementById('report-product-name').textContent = scan.productName;
             document.getElementById('report-subtitle').textContent = scan.manufacturer + ' • ' + scan.category + ' • Automated packaging scan against Legal Metrology Rules, 2011.';
-
-            var score = scan.score == null ? 0 : scan.score;
-            var badge = document.getElementById('report-score-badge');
-            var icon = document.getElementById('report-score-icon');
-            document.getElementById('report-score-value').textContent = (scan.score == null ? 'Pending' : score + '%');
-            if (scan.status === 'compliant') {
-                badge.className = 'flex items-center gap-2 bg-secondary-container/40 text-on-secondary-container px-4 py-2 rounded font-bold border border-secondary/40 shadow-sm';
-                icon.textContent = 'check_circle';
-            } else if (scan.status === 'pending') {
-                badge.className = 'flex items-center gap-2 bg-surface-variant text-on-surface-variant px-4 py-2 rounded font-bold border border-outline-variant shadow-sm';
-                icon.textContent = 'schedule';
-            } else {
-                badge.className = 'flex items-center gap-2 bg-tertiary-fixed-dim/20 text-tertiary-container px-4 py-2 rounded font-bold border border-tertiary-fixed-dim/50 shadow-sm';
-                icon.textContent = 'warning';
-            }
-
-            var FINDING_STYLE = {
-                compliant: { wrap: 'flex items-start justify-between p-3 bg-surface-container-lowest border border-outline-variant rounded hover:shadow-sm transition-shadow', badge: 'flex items-center gap-1 text-secondary bg-secondary-container/30 px-2 py-1 rounded text-[12px] font-bold border border-secondary/20', icon: 'check_circle', label: 'Compliant' },
-                missing: { wrap: 'flex items-start justify-between p-3 bg-error-container/10 border border-error/30 rounded hover:shadow-sm transition-shadow', badge: 'flex items-center gap-1 text-error bg-error-container px-2 py-1 rounded text-[12px] font-bold border border-error/20', icon: 'cancel', label: 'Missing' },
-                low_confidence: { wrap: 'flex items-start justify-between p-3 bg-tertiary-fixed-dim/5 border border-tertiary-fixed-dim/30 rounded hover:shadow-sm transition-shadow', badge: 'flex items-center gap-1 text-tertiary-container bg-tertiary-fixed-dim/20 px-2 py-1 rounded text-[12px] font-bold border border-tertiary-fixed-dim/40', icon: 'warning', label: 'Low Confidence' }
-            };
-
-            var container = document.getElementById('report-findings');
-            (scan.findings || []).forEach(function (f) {
-                var style = FINDING_STYLE[f.status] || FINDING_STYLE.compliant;
-                var row = document.createElement('div');
-                row.className = style.wrap;
-                row.innerHTML =
-                    '<div class="flex flex-col gap-1">' +
-                    '<span class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider">' + LL.escapeHtml(f.field) + '</span>' +
-                    '<span class="text-body-md font-body-md text-on-surface font-medium' + (f.status !== 'compliant' ? ' italic opacity-70' : '') + '">' + LL.escapeHtml(f.value || '') + '</span>' +
-                    (f.note ? '<span class="text-label-md font-label-md text-error flex items-center gap-1 mt-1"><span class="material-symbols-outlined text-[14px]">error</span>' + LL.escapeHtml(f.note) + '</span>' : '') +
-                    '</div>' +
-                    '<div class="' + style.badge + '"><span class="material-symbols-outlined text-[16px]">' + style.icon + '</span>' + style.label + '</div>';
-                container.appendChild(row);
-            });
 
             if (scan.caseId) {
                 var viewCaseBtn = document.getElementById('view-case-btn');
@@ -392,8 +382,9 @@
                 viewCaseBtn.addEventListener('click', function () { location.href = 'case-details.html?id=' + encodeURIComponent(scan.caseId); });
                 logActionBtn.addEventListener('click', function () { location.href = 'log-case-action.html?id=' + encodeURIComponent(scan.caseId); });
             }
-        }
-                });
+
+            runComplianceCheck(scan.id);
+        });
     }
 </script>
 </body></html>
