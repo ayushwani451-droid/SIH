@@ -271,7 +271,7 @@
   function logout() {
     sessionStorage.removeItem(SESSION_KEY);
     if (global.fetch) {
-      fetch("http://localhost:8000/api/auth/logout", { method: "POST", credentials: "include" }).catch(function () {});
+      fetch("http://127.0.0.1:8000/api/auth/logout", { method: "POST", credentials: "include" }).catch(function () {});
     }
   }
 

@@ -5,7 +5,7 @@
 (function (global) {
   "use strict";
 
-  var DEFAULT_BASE_URL = "http://localhost:8000";
+  var DEFAULT_BASE_URL = "http://127.0.0.1:8000";
 
   function getCompliance(scanId, profile, baseUrl) {
     var url = (baseUrl || DEFAULT_BASE_URL) + "/api/ocr/compliance/" + encodeURIComponent(scanId);

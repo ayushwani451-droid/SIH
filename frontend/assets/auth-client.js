@@ -1,14 +1,14 @@
 /* Browser client for the backend authentication API. */
 (function (global) {
   "use strict";
-  var API_BASE = "http://localhost:8000/api/auth";
+  var API_BASE = "http://127.0.0.1:8000/api/auth";
   function request(path, options) {
     options = options || {};
     options.headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
     options.credentials = "include";
     var url = /^https?:\/\//i.test(path) ? path : API_BASE + path;
     return fetch(url, options).catch(function () {
-      throw new Error("Could not reach the backend at http://localhost:8000. Start the FastAPI server and try again.");
+      throw new Error("Could not reach the backend at http://127.0.0.1:8000. Start the FastAPI server and try again.");
     }).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (data) {
         if (!response.ok) {
@@ -35,15 +35,15 @@
     dashboard: function () { return request("/dashboard"); }
   };
   global.LLManufacturer = {
-    products: function () { return request("http://localhost:8000/api/manufacturer/products"); },
-    createProduct: function (data) { return request("http://localhost:8000/api/manufacturer/products", { method: "POST", body: JSON.stringify(data) }); },
-    revisions: function () { return request("http://localhost:8000/api/manufacturer/revisions"); },
+    products: function () { return request("http://127.0.0.1:8000/api/manufacturer/products"); },
+    createProduct: function (data) { return request("http://127.0.0.1:8000/api/manufacturer/products", { method: "POST", body: JSON.stringify(data) }); },
+    revisions: function () { return request("http://127.0.0.1:8000/api/manufacturer/revisions"); },
     selfCheck: function (file, productId, productName) {
       var formData = new FormData();
       formData.append("file", file, file.name);
       formData.append("product_id", productId || "");
       formData.append("product_name", productName || "");
-      return fetch("http://localhost:8000/api/manufacturer/self-check", { method: "POST", body: formData, credentials: "include" }).then(function (response) {
+      return fetch("http://127.0.0.1:8000/api/manufacturer/self-check", { method: "POST", body: formData, credentials: "include" }).then(function (response) {
         return response.json().then(function (data) {
           if (!response.ok) throw new Error(data.detail || "Self-check failed");
           return data;

@@ -4,7 +4,7 @@
 (function (global) {
   "use strict";
 
-  var DEFAULT_BASE_URL = "http://localhost:8000";
+  var DEFAULT_BASE_URL = "http://127.0.0.1:8000";
   var ALLOWED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
   var ALLOWED_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 
